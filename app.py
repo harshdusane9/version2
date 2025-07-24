@@ -1,39 +1,66 @@
-import os
-import json
-from flask import Flask, request, jsonify
-from flask_socketio import SocketIO
-from google.cloud import speech_v1 as speech
-from google.oauth2 import service_account
+from flask import Flask, render_template
+from flask_socketio import SocketIO, emit
+from google.cloud import speech
+import base64
+import eventlet
+
+eventlet.monkey_patch()
 
 app = Flask(__name__)
 socketio = SocketIO(app, cors_allowed_origins="*")
 
-# Load credentials from environment variable
-credentials_info = json.loads(os.environ["GOOGLE_CLOUD_KEY"])
-credentials = service_account.Credentials.from_service_account_info(credentials_info)
-client = speech.SpeechClient(credentials=credentials)
+# Configure Google Speech client
+speech_client = speech.SpeechClient()
 
-@app.route('/')
-def home():
-    return "Flask + Google Speech API is working!"
+STREAMING_LIMIT = 240000  # max streaming duration in ms (4 min)
 
-@app.route('/speech-to-text', methods=['POST'])
-def speech_to_text():
-    audio_file = request.files.get('audio')
-    if not audio_file:
-        return jsonify({"error": "No audio file provided"}), 400
-
-    audio = speech.RecognitionAudio(content=audio_file.read())
-    config = speech.RecognitionConfig(
+# Audio config for Google streaming recognition
+streaming_config = speech.StreamingRecognitionConfig(
+    config=speech.RecognitionConfig(
         encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
         sample_rate_hertz=16000,
-        language_code="en-US"
-    )
+        language_code="en-US",
+        max_alternatives=1,
+    ),
+    interim_results=True,
+)
 
-    response = client.recognize(config=config, audio=audio)
-    text = " ".join([result.alternatives[0].transcript for result in response.results])
-    return jsonify({"transcript": text})
+@app.route("/")
+def index():
+    return render_template("index.html")
+
+def generate_requests(audio_generator):
+    for content in audio_generator:
+        yield speech.StreamingRecognizeRequest(audio_content=content)
+
+@socketio.on("startStream")
+def start_stream():
+    print("Stream started")
+
+@socketio.on("endStream")
+def end_stream():
+    print("Stream ended")
+
+@socketio.on("audio")
+def audio(data):
+    # data is base64 audio chunk from client
+    audio_content = base64.b64decode(data)
+    requests = generate_requests([audio_content])
+
+    responses = speech_client.streaming_recognize(streaming_config, requests)
+
+    # Because streaming_recognize yields multiple results,
+    # but we are sending one chunk at a time, we only take first result here.
+    try:
+        for response in responses:
+            for result in response.results:
+                transcript = result.alternatives[0].transcript
+                is_final = result.is_final
+                emit("transcript", {"transcript": transcript, "is_final": is_final})
+                break
+            break
+    except Exception as e:
+        print("Error in speech recognition:", e)
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    socketio.run(app, host="0.0.0.0", port=port)
+    socketio.run(app, host="0.0.0.0", port=5000)
