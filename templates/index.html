@@ -1,14 +1,62 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Speech to Text</title>
-    <script defer src="/static/script.js"></script>
+  <title>Real-Time Speech to Text</title>
+  <script src="https://cdn.socket.io/4.7.1/socket.io.min.js"
+          integrity="sha384-cPwlPLvBTa6dG2P5A2i4XkWvj6Ej7tEhpgt0A9b7rC/U4Xg9Q+f7S2dh1u/NiGZ+" crossorigin="anonymous"></script>
 </head>
 <body>
-    <h1>Speech to Text Demo</h1>
-    <button id="recordBtn">Start Recording</button>
-    <p id="output"></p>
+  <h1>Real-Time Speech-to-Text</h1>
+  <button id="start">Start Recording</button>
+  <button id="stop" disabled>Stop Recording</button>
+
+  <div id="transcript"></div>
+
+  <script>
+    const socket = io();
+
+    let mediaRecorder;
+    let audioChunks = [];
+
+    document.getElementById('start').onclick = async () => {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+
+      mediaRecorder.start(250); // send data every 250ms
+
+      socket.emit("startStream");
+
+      mediaRecorder.ondataavailable = (event) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          let base64data = reader.result.split(',')[1];
+          socket.emit("audio", base64data);
+        };
+        reader.readAsDataURL(event.data);
+      };
+
+      mediaRecorder.onstop = () => {
+        socket.emit("endStream");
+      };
+
+      document.getElementById('start').disabled = true;
+      document.getElementById('stop').disabled = false;
+    };
+
+    document.getElementById('stop').onclick = () => {
+      mediaRecorder.stop();
+      document.getElementById('start').disabled = false;
+      document.getElementById('stop').disabled = true;
+    };
+
+    socket.on("transcript", (data) => {
+      const div = document.getElementById("transcript");
+      if(data.is_final) {
+        div.innerHTML += `<p><b>${data.transcript}</b></p>`;
+      } else {
+        div.innerHTML = `<p>${data.transcript}</p>`;
+      }
+    });
+  </script>
 </body>
 </html>
